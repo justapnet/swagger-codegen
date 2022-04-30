@@ -8,6 +8,7 @@ import com.squareup.okhttp.logging.HttpLoggingInterceptor;
 import com.squareup.okhttp.logging.HttpLoggingInterceptor.Level;
 import okio.BufferedSink;
 import okio.Okio;
+import okio.Buffer;
 {{#joda}}
 import org.joda.time.DateTime;
 import org.joda.time.LocalDate;
@@ -26,6 +27,7 @@ import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.nio.Buffer;
 import java.lang.reflect.Type;
 import java.net.URLConnection;
 import java.net.URLEncoder;
@@ -36,6 +38,10 @@ import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.security.*;
+import java.security.interfaces.RSAPublicKey;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
 import java.text.DateFormat;
 {{#java8}}
 import java.time.LocalDate;
@@ -52,6 +58,10 @@ import {{invokerPackage}}.auth.Authentication;
 import {{invokerPackage}}.auth.HttpBasicAuth;
 import {{invokerPackage}}.auth.ApiKeyAuth;
 import {{invokerPackage}}.auth.OAuth;
+
+import java.io.IOException;
+import java.security.spec.InvalidKeySpecException;
+import java.nio.charset.StandardCharsets;
 
 public class ApiClient {
 
@@ -73,6 +83,33 @@ public class ApiClient {
 
     private OkHttpClient httpClient;
     private JSON json;
+
+    private PrivateKey merchantPrivateKey = null;
+    private RSAPublicKey justapPublicKey = null;
+
+    public void SetMerchantPrivateKeyContent(String MerchantPrivateKeyContent) throws GeneralSecurityException, IOException {
+        this.merchantPrivateKey = RsaUtils.loadPrivateKey(MerchantPrivateKeyContent);
+    }
+
+    public void SetJustapPublicKeyContent(String JustapPublicKeyContent)throws GeneralSecurityException, IOException {
+        this.justapPublicKey = RsaUtils.loadPublicKey(JustapPublicKeyContent);
+    }
+
+    public void SetMerchantPrivateKeyByPath(String pemPath) throws IOException, NoSuchAlgorithmException, InvalidKeySpecException, GeneralSecurityException  {
+        this.merchantPrivateKey = RsaUtils.loadPrivateKeyByPath(pemPath);
+    }
+
+    public void SetJustapPublicKeyByPath(String pemPath) throws IOException, NoSuchAlgorithmException, InvalidKeySpecException {
+        this.justapPublicKey = RsaUtils.loadPublicKeyByPath(pemPath);
+    }
+
+    public RSAPublicKey GetJustapPublicKey() {
+        return this.justapPublicKey;
+    }
+
+    public PrivateKey GetMerchantPrivateKey() {
+        return this.merchantPrivateKey;
+    }
 
     private HttpLoggingInterceptor loggingInterceptor;
 
@@ -991,7 +1028,6 @@ public class ApiClient {
 
         final String url = buildUrl(path, queryParams, collectionQueryParams);
         final Request.Builder reqBuilder = new Request.Builder().url(url);
-        processHeaderParams(headerParams, reqBuilder);
 
         String contentType = (String) headerParams.get("Content-Type");
         // ensuring a default content type
@@ -1020,6 +1056,83 @@ public class ApiClient {
 
         Request request = null;
 
+        String content = null;
+        try {
+            Buffer buffer = new Buffer();
+            reqBody.writeTo(buffer);
+            System.out.println("debug 00==>");
+            content = buffer.readUtf8();
+            // System.out.println(content);
+        } catch (IOException e) {
+            System.out.print("err");
+        }
+
+        String dataToBeSign = null;
+        String nonceStr = null;
+        String reqTime = Long.toString(System.currentTimeMillis() / 1000);
+        String sign = null;
+        String appApiKey = null;
+        String bodyMd5 = null;
+
+        System.out.println("debug 11==>");
+        System.out.println(reqBody);
+        System.out.println("debug 22==>");
+        System.out.println(headerParams);
+        System.out.println("debug 33==>");
+        System.out.println(request);
+        System.out.println("debug 44==>");
+        System.out.println(GetMerchantPrivateKey());
+        System.out.println("debug end==>");
+
+        // random str
+        int leftLimit = 97; // letter 'a'
+        int rightLimit = 122; // letter 'z'
+        int targetStringLength = 20;
+        Random random = new Random();
+
+        nonceStr = random.ints(leftLimit, rightLimit + 1)
+                .limit(targetStringLength)
+                .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
+                .toString();
+
+        // sign
+        for (Authentication auth : authentications.values()) {
+            if (auth instanceof ApiKeyAuth) {
+                appApiKey = ((ApiKeyAuth) auth).getApiKey();
+                break;
+            }
+        }
+
+        // body content md5
+        try {
+            bodyMd5 = md5((content + reqTime + nonceStr).getBytes());
+        } catch (NoSuchAlgorithmException e) {
+            throw new ApiException("Generate content md5 failed.");
+        }
+
+        dataToBeSign = bodyMd5 + nonceStr;
+        // end body content md5
+
+        // generate sign
+        sign = generateSign(dataToBeSign.getBytes(StandardCharsets.UTF_8));
+        // end generate sign
+
+        headerParams.put("X-Justap-Api-Key", appApiKey);
+        headerParams.put("X-Justap-Signature", sign);
+        headerParams.put("X-Justap-Request-Time", reqTime);
+        headerParams.put("X-Justap-Nonce", nonceStr);
+        headerParams.put("X-Justap-Body-Hash", bodyMd5);
+        // end sign
+
+        // System.out.println("========>");
+        // System.out.println(appApiKey);
+        // System.out.println(sign);
+        // System.out.println(reqTime);
+        // System.out.println(nonceStr);
+        // System.out.println(bodyMd5);
+        // System.out.println("========>");
+
+        processHeaderParams(headerParams, reqBuilder);
         if(progressRequestListener != null && reqBody != null) {
             ProgressRequestBody progressRequestBody = new ProgressRequestBody(reqBody, progressRequestListener);
             request = reqBuilder.method(method, progressRequestBody).build();
@@ -1028,6 +1141,41 @@ public class ApiClient {
         }
 
         return request;
+    }
+
+    public String md5(byte[] str) throws NoSuchAlgorithmException {
+        MessageDigest md = MessageDigest.getInstance("MD5");
+        md.update(str);
+        byte[] digiest = md.digest();
+        return byte2hex(digiest);
+    }
+
+    public String generateSign(byte[] content) throws ApiException {
+        try {
+            Signature privateSignature = Signature.getInstance("SHA256withRSA");
+            privateSignature.initSign(GetMerchantPrivateKey());
+            privateSignature.update(content);
+            byte[] signature = privateSignature.sign();
+            return Base64.getEncoder().encodeToString(signature);
+        } catch (Exception e) {
+            throw new ApiException(e.getMessage());
+        }
+    }
+
+    public String byte2hex(byte[] b) {
+        StringBuilder hs= new StringBuilder();
+        String stmp="";
+        for (byte value : b) {
+            //为了保证二进制机器数不变，这里需要& 0XFF
+            stmp = (Integer.toHexString(value & 0XFF));
+            //如果只有一位，需要在前面补上0凑足两位
+            if(stmp.length() == 1) {
+                hs.append("0").append(stmp);
+            }else {
+                hs.append(stmp);
+            }
+        }
+        return hs.toString();
     }
 
     /**
