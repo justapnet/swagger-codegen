@@ -2,26 +2,26 @@
 package {{packageName}}
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"encoding/xml"
-	"errors"
-	"fmt"
-	"io"
-	"mime/multipart"
-	"net/http"
-	"net/url"
-	"os"
-	"path/filepath"
-	"reflect"
-	"regexp"
-	"strconv"
-	"strings"
-	"time"
-	"unicode/utf8"
+    "bytes"
+    "context"
+    "encoding/json"
+    "encoding/xml"
+    "errors"
+    "fmt"
+    "io"
+    "mime/multipart"
+    "net/http"
+    "net/url"
+    "os"
+    "path/filepath"
+    "reflect"
+    "regexp"
+    "strconv"
+    "strings"
+    "time"
+    "unicode/utf8"
 
-	"golang.org/x/oauth2"
+    "golang.org/x/oauth2"
 )
 
 var (
@@ -309,6 +309,43 @@ func (c *APIClient) prepareRequest(
 	for header, value := range c.cfg.DefaultHeader {
 		localVarRequest.Header.Add(header, value)
 	}
+
+    // sign request
+    var dataToBeSignBuf *bytes.Buffer
+    var dataToBeSign []byte
+    dataToBeSign = make([]byte, body.Len())
+
+    if postBody != nil {
+        dataToBeSignBuf, err = setBody(postBody, headerParams["Content-Type"])
+        if err != nil {
+            return nil, err
+        }
+        _, err = dataToBeSignBuf.Read(dataToBeSign)
+        if err != nil {
+            if err == io.EOF {
+            } else {
+                return nil, err
+            }
+        }
+    }
+
+    nonceStr := RandomString(20)
+    requestTime := fmt.Sprintf("%d", time.Now().Unix())
+
+    dataToBeMd5Str := fmt.Sprintf("%s%s%s", string(dataToBeSign), requestTime, nonceStr)
+    bodyMd5 := Md5Hash(dataToBeMd5Str)
+    localVarRequest.Header.Add("X-Justap-Body-Hash", bodyMd5)
+
+    dataToBeSignStr := fmt.Sprintf("%s%s", bodyMd5, nonceStr)
+    sign, err := RsaPrivateKeySign([]byte(dataToBeSignStr), c.cfg.MerchantRsaPrivateKey)
+    if err != nil {
+        return nil, err
+    }
+
+    localVarRequest.Header.Add("X-Justap-Signature", sign)
+    localVarRequest.Header.Add("X-Justap-Request-Time", requestTime)
+    localVarRequest.Header.Add("X-Justap-Nonce", nonceStr)
+    // end sign
 
 	return localVarRequest, nil
 }

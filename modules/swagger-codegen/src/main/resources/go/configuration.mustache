@@ -2,7 +2,14 @@
 package {{packageName}}
 
 import (
-	"net/http"
+    "crypto/rsa"
+    "crypto/x509"
+    "encoding/pem"
+    "errors"
+    "fmt"
+    "io/ioutil"
+    "net/http"
+    "strings"
 )
 
 // contextKeys are used to identify the type of value in the context.
@@ -48,11 +55,14 @@ type Configuration struct {
 	DefaultHeader map[string]string `json:"defaultHeader,omitempty"`
 	UserAgent     string            `json:"userAgent,omitempty"`
 	HTTPClient    *http.Client
+    MerchantRsaPrivateKey *rsa.PrivateKey
 }
 
 func NewConfiguration() *Configuration {
+    var host = "{{{basePath}}}"
+    host = strings.TrimRight(host, "/")
 	cfg := &Configuration{
-		BasePath:      "{{{basePath}}}",
+		BasePath:      host,
 		DefaultHeader: make(map[string]string),
 		UserAgent:     "{{#httpUserAgent}}{{{.}}}{{/httpUserAgent}}{{^httpUserAgent}}Swagger-Codegen/{{{packageVersion}}}/go{{/httpUserAgent}}",
 	}
@@ -61,4 +71,37 @@ func NewConfiguration() *Configuration {
 
 func (c *Configuration) AddDefaultHeader(key string, value string) {
 	c.DefaultHeader[key] = value
+}
+
+func (c *Configuration) SetMerchantRsaPrivateKeyByPath(path string) error {
+    raw, err := ioutil.ReadFile(path)
+    if err != nil {
+    return err
+    }
+
+    return c.SetMerchantRsaPrivateKeyByContent(raw)
+}
+
+func (c *Configuration) SetMerchantRsaPrivateKeyByContent(content []byte) error {
+    block, _ := pem.Decode(content)
+    if block == nil {
+        return errors.New(fmt.Sprintf("pem.Decode(%s),error", content))
+    }
+    var pk *rsa.PrivateKey
+    var ok bool
+    pk8, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+    if err != nil {
+     pk, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+        if err != nil {
+            return err
+        }
+    }
+    if pk == nil {
+        pk, ok = pk8.(*rsa.PrivateKey)
+        if !ok {
+            return errors.New("parse PKCS8 key error")
+        }
+    }
+    c.MerchantRsaPrivateKey = pk
+    return nil
 }

@@ -498,6 +498,27 @@ use {{invokerPackage}}\ObjectSerializer;
         );
 
         $query = \GuzzleHttp\Psr7\Query::build($queryParams);
+
+        // signature
+        $dataToBeSign = "";
+        $dataToBeSign .= $httpBody;
+        $requestTime = time();
+        $dataToBeSign .= $requestTime;
+        $nonceStr = rand_chars(32);
+        $dataToBeSign .= $nonceStr;
+
+        $bodyMd5 = md5($dataToBeSign);
+
+        $signResult = openssl_sign($bodyMd5.$nonceStr, $requestSignature, $this->config->getPrivateKey(), 'sha256');
+        if (!$signResult) {
+            throw new \Exception("Generate signature failed");
+        }
+        $headers['X-Justap-Signature'] = base64_encode($requestSignature);
+        $headers['X-Justap-Request-Time'] = $requestTime;
+        $headers['X-Justap-Nonce'] = $nonceStr;
+        $headers['X-Justap-Body-Hash'] = $bodyMd5;
+        // end signature
+
         return new Request(
             '{{httpMethod}}',
             $this->config->getHost() . $resourcePath . ($query ? "?{$query}" : ''),
@@ -526,4 +547,17 @@ use {{invokerPackage}}\ObjectSerializer;
         return $options;
     }
 }
+
+function rand_chars($n) {
+    $characters = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    $randomString = '';
+
+    for ($i = 0; $i < $n; $i++) {
+        $index = rand(0, strlen($characters) - 1);
+        $randomString .= $characters[$index];
+    }
+
+    return $randomString;
+}
+
 {{/operations}}
