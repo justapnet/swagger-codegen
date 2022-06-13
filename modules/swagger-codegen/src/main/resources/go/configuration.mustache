@@ -58,8 +58,11 @@ type Configuration struct {
     MerchantRsaPrivateKey *rsa.PrivateKey
 }
 
-func NewConfiguration() *Configuration {
+func NewConfiguration(url string) *Configuration {
     var host = "{{{basePath}}}"
+    if url != "" {
+        host = url
+    }
     host = strings.TrimRight(host, "/")
 	cfg := &Configuration{
 		BasePath:      host,
